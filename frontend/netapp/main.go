@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	dockerfile "github.com/moby/buildkit/frontend/dockerfile/builder"
+	"github.com/moby/buildkit/frontend/netapp/builder"
 	"github.com/moby/buildkit/frontend/gateway/grpcclient"
 	"github.com/moby/buildkit/util/appcontext"
 	"github.com/moby/buildkit/util/stack"
@@ -26,7 +26,7 @@ func main() {
 		os.Exit(0)
 	}
 
-	if err := grpcclient.RunFromEnvironment(appcontext.Context(), dockerfile.Build); err != nil {
+	if err := grpcclient.RunFromEnvironment(appcontext.Context(), builder.Build); err != nil {
 		logrus.Errorf("fatal error: %+v", err)
 		panic(err)
 	}
