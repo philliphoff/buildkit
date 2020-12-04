@@ -99,6 +99,13 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 	image.Architecture = "amd64"
 	image.Config.Entrypoint = entrypoint
 	image.Config.Env = env
+
+	if image.Config.ExposedPorts == nil {
+		image.Config.ExposedPorts = make(map[string]struct{})
+	}
+
+	image.Config.ExposedPorts["80/tcp"] = struct{}{}
+
 	image.Config.WorkingDir = "/app"
 
 	imageMarshaled, err := json.Marshal(image)
