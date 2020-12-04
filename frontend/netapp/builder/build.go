@@ -34,10 +34,6 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 		return nil, errors.New("failed to get project name")
 	}
 
-//	sourceOp := llb.
-//		Image("mcr.microsoft.com/dotnet/aspnet:5.0").
-//		Dir("/app")
-
 	sourceOp := llb.
 		Image("mcr.microsoft.com/dotnet/sdk:5.0").
 		Dir("/src").
@@ -85,14 +81,25 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 	image := dockerfile2llb.Image{
 	}
 
+	var env []string
+
+	// TODO: Pull from base image.
+	env = append(env, "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+	env = append(env, "ASPNETCORE_URLS=http://+:80")
+	env = append(env, "DOTNET_RUNNING_IN_CONTAINER=true")
+	env = append(env, "DOTNET_VERSION=5.0.0")
+	env = append(env, "ASPNET_VERSION=5.0.0")
+
 	var entrypoint []string
 
 	entrypoint = append(entrypoint, "dotnet")
+	// TODO: Pull/evaluate from project file
 	entrypoint = append(entrypoint, assembly)
 
 	image.Architecture = "amd64"
-	image.Config.WorkingDir = "/app"
 	image.Config.Entrypoint = entrypoint
+	image.Config.Env = env
+	image.Config.WorkingDir = "/app"
 
 	imageMarshaled, err := json.Marshal(image)
 
