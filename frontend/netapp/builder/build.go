@@ -2,13 +2,17 @@ package builder
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/moby/buildkit/client/llb"
+	"github.com/moby/buildkit/exporter/containerimage/exptypes"
+	"github.com/moby/buildkit/frontend/dockerfile/dockerfile2llb"
 	"github.com/moby/buildkit/frontend/gateway/client"
 	"github.com/pkg/errors"
 )
 
 const (
+	keyNameAssembly            = "assembly"
 	keyNameProject             = "project"
 	keyLocalProject            = "project"
 )
@@ -17,6 +21,12 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 	opts := c.BuildOpts().Opts
 	
 	context := llb.Local(keyLocalProject)
+
+	assembly, ok := opts[keyNameAssembly]
+
+	if !ok {
+		return nil, errors.New("failed to get assembly name")
+	}
 
 	project, ok := opts[keyNameProject]
 
@@ -72,6 +82,25 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 		return nil, errors.Wrap(err, "Unable to get reference.")
 	}
 
+	image := dockerfile2llb.Image{
+	}
+
+	var entrypoint []string
+
+	entrypoint = append(entrypoint, "dotnet")
+	entrypoint = append(entrypoint, assembly)
+
+	image.Architecture = "amd64"
+	image.Config.WorkingDir = "/app"
+	image.Config.Entrypoint = entrypoint
+
+	imageMarshaled, err := json.Marshal(image)
+
+	if err != nil {
+		return nil, errors.Wrap(err, "Unable to marshal the image metadata")
+	}
+
+	buildRes.AddMeta(exptypes.ExporterImageConfigKey, imageMarshaled)
 	buildRes.SetRef(ref)
 
 	return buildRes, nil
