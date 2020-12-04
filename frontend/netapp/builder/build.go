@@ -3,7 +3,6 @@ package builder
 import (
 	"context"
 
-	"github.com/containerd/containerd/platforms"
 	"github.com/moby/buildkit/client/llb"
 	"github.com/moby/buildkit/frontend/gateway/client"
 	"github.com/pkg/errors"
@@ -41,7 +40,17 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 		).
 		Run(llb.Shlexf("dotnet build \"%s\" -c Release -o /app/build", project))
 
-	dt, err := sourceOp.Marshal(ctx, llb.LinuxAmd64)
+	publishOp := sourceOp.
+		Run(llb.Shlexf("dotnet publish \"%s\" -c Release -o /app/publish", project))
+
+	finalOp := llb.
+		Image("mcr.microsoft.com/dotnet/aspnet:5.0").
+		Dir("/app").
+		With(
+			copyFrom(publishOp.State, "/app/publish", "."),
+		)
+
+	dt, err := finalOp.Marshal(ctx, llb.LinuxAmd64)
 
 	if err != nil {
 		return nil, errors.Wrap(err, "Unable to create definition")
@@ -63,7 +72,7 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 		return nil, errors.Wrap(err, "Unable to get reference.")
 	}
 
-	buildRes.AddRef(platforms.Format(platforms.DefaultSpec()), ref)
+	buildRes.SetRef(ref)
 
 	return buildRes, nil
 }
