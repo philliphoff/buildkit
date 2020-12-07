@@ -3,7 +3,6 @@ package builder
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 
 	"github.com/moby/buildkit/client/llb"
 	"github.com/moby/buildkit/exporter/containerimage/exptypes"
@@ -113,20 +112,17 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to marshal Dockerfile object")
 	}
-	
-	assembly := netAppDockerfile.Assembly
-	project := netAppDockerfile.Project
 
-	if project == "" {
-		return nil, errors.New(fmt.Sprintf("failed to get project from Dockerfile \"%s\"", filename))
+	project, err := getProject(netAppDockerfile, opts)
+
+	if err != nil {
+		return nil, err
 	}
 
-	if assemblyOption, ok := opts[keyNameAssembly]; ok {
-		assembly = assemblyOption
-	}
+	assembly, err := getAssembly(netAppDockerfile, opts)
 
-	if projectOption, ok := opts[keyNameProject]; ok {
-		project = projectOption
+	if err != nil {
+		return nil, err
 	}
 
 	configuration := getConfiguration(netAppDockerfile, opts)
@@ -207,7 +203,7 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 
 	image.Config.ExposedPorts["80/tcp"] = struct{}{}
 
-	image.Config.WorkingDir = "/app"
+	image.Config.WorkingDir = NetAppDir
 
 	imageMarshaled, err := json.Marshal(image)
 
@@ -241,6 +237,22 @@ func copy(src llb.State, srcPath string, dest llb.State, destPath string) llb.St
 	}))
 }
 
+func getAssembly(manifest NetAppDockerfile, opts map[string]string) (string, error) {
+	assembly := manifest.Assembly
+
+	if assemblyOption, ok := opts[keyNameAssembly]; ok {
+		assembly = assemblyOption
+	}
+
+	var error error
+
+	if assembly == "" {
+		error = errors.New("no assembly property or option was set")
+	}
+
+	return assembly, error
+}
+
 func getConfiguration(manifest NetAppDockerfile, opts map[string]string) string {
 	configuration := manifest.Configuration
 
@@ -253,4 +265,20 @@ func getConfiguration(manifest NetAppDockerfile, opts map[string]string) string 
 	}
 
 	return configuration
+}
+
+func getProject(manifest NetAppDockerfile, opts map[string]string) (string, error) {
+	project := manifest.Project
+
+	if projectOption, ok := opts[keyNameProject]; ok {
+		project = projectOption
+	}
+
+	var error error
+
+	if project == "" {
+		error = errors.New("no project property or option was set")
+	}
+
+	return project, error
 }
