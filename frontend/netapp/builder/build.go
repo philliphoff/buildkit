@@ -3,6 +3,7 @@ package builder
 import (
 	"context"
 	"encoding/json"
+	"path"
 
 	"github.com/moby/buildkit/client/llb"
 	"github.com/moby/buildkit/exporter/containerimage/exptypes"
@@ -127,6 +128,9 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 
 	configuration := getConfiguration(netAppDockerfile, opts)
 
+	buildDir := path.Join(NetAppDir, "build")
+	publishDir := path.Join(NetAppDir, "publish")
+
 	sourceOp := llb.
 		Image(NetAppSdkImage).
 		Dir(NetAppSourceDir).
@@ -137,16 +141,16 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 		With(
 			copyAll(contextSource, "."),
 		).
-		Run(llb.Shlexf("dotnet build \"%s\" -c \"%s\" -o %s/build", project, configuration, NetAppDir))
+		Run(llb.Shlexf("dotnet build \"%s\" -c \"%s\" -o \"%s\"", project, configuration, buildDir))
 
 	publishOp := sourceOp.
-		Run(llb.Shlexf("dotnet publish \"%s\" -c \"%s\" -o %s/publish", project, configuration, NetAppDir))
+		Run(llb.Shlexf("dotnet publish \"%s\" -c \"%s\" -o \"%s\"", project, configuration, publishDir))
 
 	finalOp := llb.
 		Image(NetAspNetRuntimeImage).
 		Dir(NetAppDir).
 		With(
-			copyFrom(publishOp.State, "/app/publish", "."),
+			copyFrom(publishOp.State, publishDir, "."),
 		)
 
 	dt, err := finalOp.Marshal(ctx, llb.LinuxAmd64)
