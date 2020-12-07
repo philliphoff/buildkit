@@ -3,46 +3,132 @@ package builder
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/moby/buildkit/client/llb"
 	"github.com/moby/buildkit/exporter/containerimage/exptypes"
 	"github.com/moby/buildkit/frontend/dockerfile/dockerfile2llb"
 	"github.com/moby/buildkit/frontend/gateway/client"
 	"github.com/pkg/errors"
+	"gopkg.in/yaml.v2"
 )
 
 const (
+	DefaultLocalNameContext    = "context"
+	DefaultLocalNameDockerfile = "dockerfile"
+
+	defaultDockerfileName      = "Dockerfile"
+	keyFilename                = "filename"
 	keyNameAssembly            = "assembly"
+	keyNameContext             = "contextkey"
+	keyNameDockerfile          = "dockerfilekey"
 	keyNameProject             = "project"
-	keyLocalProject            = "project"
 )
 
+// NetAppDockerfile Format of .NET Core "Dockerfile"
+type NetAppDockerfile struct {
+	Assembly string
+	Project string
+}
+
+// Build Builds a .NET Core Docker-equivalent image
 func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 	opts := c.BuildOpts().Opts
-	
-	context := llb.Local(keyLocalProject)
 
-	assembly, ok := opts[keyNameAssembly]
-
-	if !ok {
-		return nil, errors.New("failed to get assembly name")
+	localNameContext := DefaultLocalNameContext
+	if v, ok := opts[keyNameContext]; ok {
+		localNameContext = v
 	}
 
-	project, ok := opts[keyNameProject]
+	contextSource := llb.Local(localNameContext,
+		llb.SessionID(c.BuildOpts().SessionID))
 
-	if !ok {
-		return nil, errors.New("failed to get project name")
+	localNameDockerfile := DefaultLocalNameDockerfile
+	if v, ok := opts[keyNameDockerfile]; ok {
+		localNameDockerfile = v
+	}
+
+	filename := opts[keyFilename]
+
+	if filename == "" {
+		return nil, errors.New("failed to get Dockerfile filename option")
+	}
+
+	if filename == "" {
+		filename = defaultDockerfileName
+	}
+
+	filenames := []string{filename}
+
+	dockerfileSource := llb.Local(localNameDockerfile,
+		llb.FollowPaths(filenames),
+		llb.SessionID(c.BuildOpts().SessionID),
+	)
+
+	dockerfileSourceDefinition, err := dockerfileSource.Marshal(ctx)
+
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to marshal Dockerfile source")
+	}
+
+	dockerfileSourceResult, err := c.Solve(ctx, client.SolveRequest{
+		Definition: dockerfileSourceDefinition.ToPB(),
+	})
+
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to resolve Dockerfile source")
+	}
+
+	dockerfileSourceRef, err := dockerfileSourceResult.SingleRef()
+
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to obtain reference to Dockerfile source")
+	}
+
+	dockerfileBytes, err := dockerfileSourceRef.ReadFile(ctx, client.ReadRequest{
+		Filename: filename,
+	})
+
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to read Dockerfile source")
+	}
+
+	if len(dockerfileBytes) == 0 {
+		return nil, errors.New("file is zero bytes")
+	}
+
+	netAppDockerfile := NetAppDockerfile{}
+
+	err = yaml.Unmarshal(dockerfileBytes, &netAppDockerfile)
+
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to marshal Dockerfile object")
+	}
+	
+	assembly := netAppDockerfile.Assembly
+	project := netAppDockerfile.Project
+
+	if project == "" {
+		return nil, errors.New(fmt.Sprintf("failed to get project from Dockerfile \"%s\"", filename))
+	}
+
+	if assemblyOption, ok := opts[keyNameAssembly]; ok {
+		assembly = assemblyOption
+	}
+
+	if projectOption, ok := opts[keyNameProject]; ok {
+		project = projectOption
 	}
 
 	sourceOp := llb.
 		Image("mcr.microsoft.com/dotnet/sdk:5.0").
 		Dir("/src").
 		With(
-			copyFrom(context, project, "./"),
+			copyFrom(contextSource, project, "./"),
 		).
 		Run(llb.Shlexf("dotnet restore \"%s\"", project)).
 		With(
-			copyAll(context, "."),
+			copyAll(contextSource, "."),
 		).
 		Run(llb.Shlexf("dotnet build \"%s\" -c Release -o /app/build", project))
 
