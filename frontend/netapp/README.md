@@ -9,6 +9,7 @@ This frontend uses a YAML-based manifest file format in place of the standard `D
 ```yaml
 # syntax = philliphoff/netapp-frontend
 assembly: "<publish-relative path to the output assembly>"
+configuration: "<MSBuild configuration to build>"
 project: "<context-relative path to the project file>"
 ```
 
@@ -35,7 +36,7 @@ If the manifest is otherwise named:
 To test changes to the frontend, you can have BuildKit create a BuildKit-local build of the frontend image immediately prior to using that frontend to build the target .NET Core project image.
 
 ```
-buildctl build --frontend gateway.v0 --frontend-opt=gateway-devel=true --frontend-opt=source=dockerfile.v0  --local gateway-context=<source> --local gateway-dockerfile=<source>/frontend/netapp --local context=. --local dockerfile=. --opt filename=<filename> --opt assembly=<assembly> --opt project=<project> --output type=docker,name=<name> | docker load
+buildctl build --frontend gateway.v0 --frontend-opt=gateway-devel=true --frontend-opt=source=dockerfile.v0  --local gateway-context=<source> --local gateway-dockerfile=<source>/frontend/netapp --local context=. --local dockerfile=. --opt filename=<filename> --opt assembly=<assembly> --opt configuration=<configuration> --opt project=<project> --output type=docker,name=<name> | docker load
 ```
 
-> NOTE: The `filename`, `assembly`, and `project` options are needed only if overriding the name of the "Dockerfile" or the properties read from it.
+> NOTE: The `filename`, `assembly`, `configuration`, and `project` options are needed only if overriding the name of the "Dockerfile" or the properties read from it.

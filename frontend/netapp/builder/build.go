@@ -17,6 +17,7 @@ const (
 	DefaultLocalNameContext    = "context"
 	DefaultLocalNameDockerfile = "dockerfile"
 
+	NetAppDefaultConfiguration = "Release"
 	NetAppSdkImage             = "mcr.microsoft.com/dotnet/sdk:5.0"
 	NetAspNetRuntimeImage      = "mcr.microsoft.com/dotnet/aspnet:5.0"
 
@@ -26,6 +27,7 @@ const (
 	defaultDockerfileName      = "Dockerfile"
 	keyFilename                = "filename"
 	keyNameAssembly            = "assembly"
+	keyNameConfiguration       = "configuration"
 	keyNameContext             = "contextkey"
 	keyNameDockerfile          = "dockerfilekey"
 	keyNameProject             = "project"
@@ -34,6 +36,7 @@ const (
 // NetAppDockerfile Format of .NET Core "Dockerfile"
 type NetAppDockerfile struct {
 	Assembly string
+	Configuration string
 	Project string
 }
 
@@ -126,6 +129,8 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 		project = projectOption
 	}
 
+	configuration := getConfiguration(netAppDockerfile, opts)
+
 	sourceOp := llb.
 		Image(NetAppSdkImage).
 		Dir(NetAppSourceDir).
@@ -136,10 +141,10 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 		With(
 			copyAll(contextSource, "."),
 		).
-		Run(llb.Shlexf("dotnet build \"%s\" -c Release -o %s/build", project, NetAppDir))
+		Run(llb.Shlexf("dotnet build \"%s\" -c \"%s\" -o %s/build", project, configuration, NetAppDir))
 
 	publishOp := sourceOp.
-		Run(llb.Shlexf("dotnet publish \"%s\" -c Release -o %s/publish", project, NetAppDir))
+		Run(llb.Shlexf("dotnet publish \"%s\" -c \"%s\" -o %s/publish", project, configuration, NetAppDir))
 
 	finalOp := llb.
 		Image(NetAspNetRuntimeImage).
@@ -234,4 +239,18 @@ func copy(src llb.State, srcPath string, dest llb.State, destPath string) llb.St
 		AttemptUnpack:  true,
 		CreateDestPath: true,
 	}))
+}
+
+func getConfiguration(manifest NetAppDockerfile, opts map[string]string) string {
+	configuration := manifest.Configuration
+
+	if configurationOption, ok := opts[keyNameConfiguration]; ok {
+		configuration = configurationOption
+	}
+
+	if configuration == "" {
+		configuration = NetAppDefaultConfiguration
+	}
+
+	return configuration
 }
