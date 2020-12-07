@@ -167,15 +167,6 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 	image := dockerfile2llb.Image{
 	}
 
-	var env []string
-
-	// TODO: Pull from base image.
-	env = append(env, "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
-	env = append(env, "ASPNETCORE_URLS=http://+:80")
-	env = append(env, "DOTNET_RUNNING_IN_CONTAINER=true")
-	env = append(env, "DOTNET_VERSION=5.0.0")
-	env = append(env, "ASPNET_VERSION=5.0.0")
-
 	var entrypoint []string
 
 	entrypoint = append(entrypoint, "dotnet")
@@ -184,7 +175,20 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 
 	image.Architecture = "amd64"
 	image.Config.Entrypoint = entrypoint
-	image.Config.Env = env
+
+	_, bytes, err := c.ResolveImageConfig(ctx, "mcr.microsoft.com/dotnet/aspnet:5.0", llb.ResolveImageConfigOpt{})
+
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to runtime resolve image config")
+	}
+
+	runtimeImageConfig := dockerfile2llb.Image{}
+
+	if err := json.Unmarshal(bytes, &runtimeImageConfig); err != nil {
+		return nil, errors.Wrap(err, "failed to unmarshal runtime image config")
+	}
+
+	image.Config.Env = runtimeImageConfig.Config.Env
 
 	if image.Config.ExposedPorts == nil {
 		image.Config.ExposedPorts = make(map[string]struct{})
