@@ -17,6 +17,12 @@ const (
 	DefaultLocalNameContext    = "context"
 	DefaultLocalNameDockerfile = "dockerfile"
 
+	NetAppSdkImage             = "mcr.microsoft.com/dotnet/sdk:5.0"
+	NetAspNetRuntimeImage      = "mcr.microsoft.com/dotnet/aspnet:5.0"
+
+	NetAppDir                  = "/app"
+	NetAppSourceDir            = "/src"
+
 	defaultDockerfileName      = "Dockerfile"
 	keyFilename                = "filename"
 	keyNameAssembly            = "assembly"
@@ -121,8 +127,8 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 	}
 
 	sourceOp := llb.
-		Image("mcr.microsoft.com/dotnet/sdk:5.0").
-		Dir("/src").
+		Image(NetAppSdkImage).
+		Dir(NetAppSourceDir).
 		With(
 			copyFrom(contextSource, project, "./"),
 		).
@@ -130,14 +136,14 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 		With(
 			copyAll(contextSource, "."),
 		).
-		Run(llb.Shlexf("dotnet build \"%s\" -c Release -o /app/build", project))
+		Run(llb.Shlexf("dotnet build \"%s\" -c Release -o %s/build", project, NetAppDir))
 
 	publishOp := sourceOp.
-		Run(llb.Shlexf("dotnet publish \"%s\" -c Release -o /app/publish", project))
+		Run(llb.Shlexf("dotnet publish \"%s\" -c Release -o %s/publish", project, NetAppDir))
 
 	finalOp := llb.
-		Image("mcr.microsoft.com/dotnet/aspnet:5.0").
-		Dir("/app").
+		Image(NetAspNetRuntimeImage).
+		Dir(NetAppDir).
 		With(
 			copyFrom(publishOp.State, "/app/publish", "."),
 		)
@@ -176,7 +182,7 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 	image.Architecture = "amd64"
 	image.Config.Entrypoint = entrypoint
 
-	_, bytes, err := c.ResolveImageConfig(ctx, "mcr.microsoft.com/dotnet/aspnet:5.0", llb.ResolveImageConfigOpt{})
+	_, bytes, err := c.ResolveImageConfig(ctx, NetAspNetRuntimeImage, llb.ResolveImageConfigOpt{})
 
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to runtime resolve image config")
