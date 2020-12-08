@@ -42,7 +42,8 @@ type NetAppDockerfile struct {
 
 // Build Builds a .NET Core Docker-equivalent image
 func Build(ctx context.Context, c client.Client) (*client.Result, error) {
-	opts := c.BuildOpts().Opts
+	buildOpts := c.BuildOpts()
+	opts := buildOpts.Opts
 
 	localNameContext := DefaultLocalNameContext
 	if v, ok := opts[keyNameContext]; ok {
@@ -52,66 +53,10 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 	contextSource := llb.Local(localNameContext,
 		llb.SessionID(c.BuildOpts().SessionID))
 
-	localNameDockerfile := DefaultLocalNameDockerfile
-	if v, ok := opts[keyNameDockerfile]; ok {
-		localNameDockerfile = v
-	}
-
-	filename := opts[keyFilename]
-
-	if filename == "" {
-		return nil, errors.New("failed to get Dockerfile filename option")
-	}
-
-	if filename == "" {
-		filename = defaultDockerfileName
-	}
-
-	filenames := []string{filename}
-
-	dockerfileSource := llb.Local(localNameDockerfile,
-		llb.FollowPaths(filenames),
-		llb.SessionID(c.BuildOpts().SessionID),
-	)
-
-	dockerfileSourceDefinition, err := dockerfileSource.Marshal(ctx)
+	netAppDockerfile, err := getManifest(ctx, c, opts, buildOpts.SessionID)
 
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to marshal Dockerfile source")
-	}
-
-	dockerfileSourceResult, err := c.Solve(ctx, client.SolveRequest{
-		Definition: dockerfileSourceDefinition.ToPB(),
-	})
-
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to resolve Dockerfile source")
-	}
-
-	dockerfileSourceRef, err := dockerfileSourceResult.SingleRef()
-
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to obtain reference to Dockerfile source")
-	}
-
-	dockerfileBytes, err := dockerfileSourceRef.ReadFile(ctx, client.ReadRequest{
-		Filename: filename,
-	})
-
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to read Dockerfile source")
-	}
-
-	if len(dockerfileBytes) == 0 {
-		return nil, errors.New("file is zero bytes")
-	}
-
-	netAppDockerfile := NetAppDockerfile{}
-
-	err = yaml.Unmarshal(dockerfileBytes, &netAppDockerfile)
-
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to marshal Dockerfile object")
+		return nil, err
 	}
 
 	project, err := getProject(netAppDockerfile, opts)
@@ -269,6 +214,64 @@ func getConfiguration(manifest NetAppDockerfile, opts map[string]string) string 
 	}
 
 	return configuration
+}
+
+func getManifest(ctx context.Context, c client.Client, opts map[string]string, sessionID string) (NetAppDockerfile, error) {
+	var manifest NetAppDockerfile
+
+	localNameDockerfile := DefaultLocalNameDockerfile
+	if v, ok := opts[keyNameDockerfile]; ok {
+		localNameDockerfile = v
+	}
+
+	filename := opts[keyFilename]
+
+	if filename == "" {
+		filename = defaultDockerfileName
+	}
+
+	filenames := []string{filename}
+
+	dockerfileSource := llb.Local(localNameDockerfile,
+		llb.FollowPaths(filenames),
+		llb.SessionID(sessionID),
+	)
+
+	dockerfileSourceDefinition, err := dockerfileSource.Marshal(ctx)
+
+	if err != nil {
+		return manifest, errors.Wrap(err, "failed to marshal Dockerfile source")
+	}
+
+	dockerfileSourceResult, err := c.Solve(ctx, client.SolveRequest{
+		Definition: dockerfileSourceDefinition.ToPB(),
+	})
+
+	if err != nil {
+		return manifest, errors.Wrap(err, "failed to resolve Dockerfile source")
+	}
+
+	dockerfileSourceRef, err := dockerfileSourceResult.SingleRef()
+
+	if err != nil {
+		return manifest, errors.Wrap(err, "failed to obtain reference to Dockerfile source")
+	}
+
+	dockerfileBytes, err := dockerfileSourceRef.ReadFile(ctx, client.ReadRequest{
+		Filename: filename,
+	})
+
+	if err != nil {
+		return manifest, errors.Wrap(err, "failed to read Dockerfile source")
+	}
+
+	err = yaml.Unmarshal(dockerfileBytes, &manifest)
+
+	if err != nil {
+		return manifest, errors.Wrap(err, "failed to marshal Dockerfile object")
+	}
+
+	return manifest, nil
 }
 
 func getProject(manifest NetAppDockerfile, opts map[string]string) (string, error) {
