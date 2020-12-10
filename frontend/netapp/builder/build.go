@@ -3,6 +3,7 @@ package builder
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path"
 
 	"github.com/moby/buildkit/client/llb"
@@ -22,6 +23,7 @@ const (
 	NetAspNetRuntimeImage      = "mcr.microsoft.com/dotnet/aspnet:5.0"
 
 	NetAppDir                  = "/app"
+	NetAppMetaDir              = "/meta"
 	NetAppSourceDir            = "/src"
 
 	defaultDockerfileName      = "Dockerfile"
@@ -38,6 +40,11 @@ type NetAppDockerfile struct {
 	Assembly string
 	Configuration string
 	Project string
+}
+
+// NetAppMetadata Format of metadata extracted from .NET Core project
+type NetAppMetadata struct {
+	Assembly string
 }
 
 // Build Builds a .NET Core Docker-equivalent image
@@ -65,12 +72,6 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 		return nil, err
 	}
 
-	assembly, err := getAssembly(netAppDockerfile, opts)
-
-	if err != nil {
-		return nil, err
-	}
-
 	configuration := getConfiguration(netAppDockerfile, opts)
 
 	buildDir := path.Join(NetAppDir, "build")
@@ -85,10 +86,77 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 		Run(llb.Shlexf("dotnet restore \"%s\"", project)).
 		With(
 			copyAll(contextSource, "."),
-		).
+		)
+
+	assembly := getAssembly(netAppDockerfile, opts)
+
+	if (assembly == "") {
+		targetsContent := 
+`<Project>
+	<!-- All the relevant info is in root-level PropertyGroups, so there are no dependent targets to make this work -->
+	<Target Name="GetProjectProperties">
+		<WriteLinesToFile
+			File="$(InfoOutputPath)"
+			Lines="assembly: &quot;$(AssemblyName).dll&quot;"
+			Overwrite="True" />
+	</Target>
+</Project>`
+
+		targetsFilename := fmt.Sprintf("%s/GetProjectProperties.targets", NetAppMetaDir)
+		metadataFilename := fmt.Sprintf("%s/meta.out", NetAppDir)
+
+		metadataOp := sourceOp.
+			With(
+				mkDir("/meta"),
+				write([]byte(targetsContent), targetsFilename),
+			).
+			Run(llb.Shlexf("dotnet build /t:GetProjectProperties /p:CustomAfterMicrosoftCommonTargets=\"%s\" /p:CustomAfterMicrosoftCommonCrossTargetingTargets=\"%s\" /p:InfoOutputPath=\"%s\" \"%s\"", targetsFilename, targetsFilename, metadataFilename, project))
+
+		metadataOpMarshaled, err := metadataOp.Marshal(ctx, llb.LinuxAmd64)
+
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to marshal metadata operation")
+		}
+
+		metadataOpResult, err := c.Solve(ctx, client.SolveRequest{
+			Definition: metadataOpMarshaled.ToPB(),
+		})
+
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to solve metadata operation")
+		}
+
+		metadataOpRef, err := metadataOpResult.SingleRef()
+
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to get metadata reference")
+		}
+
+		metadataContent, err := metadataOpRef.ReadFile(ctx, client.ReadRequest{
+			Filename: metadataFilename,
+		})
+
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to read metadata content")
+		}
+
+		var metadata NetAppMetadata
+
+		if err = yaml.Unmarshal(metadataContent, &metadata); err != nil {
+			return nil, errors.Wrap(err, "failed to unmarshal metadata")
+		}
+
+		assembly = metadata.Assembly
+
+		if assembly == "" {
+			return nil, errors.New("unable to determine the assembly")
+		}
+	}
+
+	buildOp := sourceOp.
 		Run(llb.Shlexf("dotnet build \"%s\" -c \"%s\" -o \"%s\"", project, configuration, buildDir))
 
-	publishOp := sourceOp.
+	publishOp := buildOp.
 		Run(llb.Shlexf("dotnet publish \"%s\" -c \"%s\" -o \"%s\"", project, configuration, publishDir))
 
 	finalOp := llb.
@@ -186,20 +254,26 @@ func copy(src llb.State, srcPath string, dest llb.State, destPath string) llb.St
 	}))
 }
 
-func getAssembly(manifest NetAppDockerfile, opts map[string]string) (string, error) {
+func mkDir(destPath string) llb.StateOption {
+	return func(dest llb.State) llb.State {
+		return dest.File(llb.Mkdir(destPath, 0600))
+	}
+}
+
+func write(content []byte, destPath string) llb.StateOption {
+	return func(dest llb.State) llb.State {
+		return dest.File(llb.Mkfile(destPath, 0600, content))
+	}
+}
+
+func getAssembly(manifest NetAppDockerfile, opts map[string]string) string {
 	assembly := manifest.Assembly
 
 	if assemblyOption, ok := opts[keyNameAssembly]; ok {
 		assembly = assemblyOption
 	}
 
-	var error error
-
-	if assembly == "" {
-		error = errors.New("no assembly property or option was set")
-	}
-
-	return assembly, error
+	return assembly
 }
 
 func getConfiguration(manifest NetAppDockerfile, opts map[string]string) string {
