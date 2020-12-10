@@ -88,69 +88,10 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 			copyAll(contextSource, "."),
 		)
 
-	assembly := getAssembly(netAppDockerfile, opts)
+	assembly, err := getAssembly(ctx, netAppDockerfile, opts, c, sourceOp, project)
 
-	if (assembly == "") {
-		targetsContent := 
-`<Project>
-	<!-- All the relevant info is in root-level PropertyGroups, so there are no dependent targets to make this work -->
-	<Target Name="GetProjectProperties">
-		<WriteLinesToFile
-			File="$(InfoOutputPath)"
-			Lines="assembly: &quot;$(AssemblyName).dll&quot;"
-			Overwrite="True" />
-	</Target>
-</Project>`
-
-		targetsFilename := fmt.Sprintf("%s/GetProjectProperties.targets", NetAppMetaDir)
-		metadataFilename := fmt.Sprintf("%s/meta.out", NetAppDir)
-
-		metadataOp := sourceOp.
-			With(
-				mkDir("/meta"),
-				write([]byte(targetsContent), targetsFilename),
-			).
-			Run(llb.Shlexf("dotnet build /t:GetProjectProperties /p:CustomAfterMicrosoftCommonTargets=\"%s\" /p:CustomAfterMicrosoftCommonCrossTargetingTargets=\"%s\" /p:InfoOutputPath=\"%s\" \"%s\"", targetsFilename, targetsFilename, metadataFilename, project))
-
-		metadataOpMarshaled, err := metadataOp.Marshal(ctx, llb.LinuxAmd64)
-
-		if err != nil {
-			return nil, errors.Wrap(err, "failed to marshal metadata operation")
-		}
-
-		metadataOpResult, err := c.Solve(ctx, client.SolveRequest{
-			Definition: metadataOpMarshaled.ToPB(),
-		})
-
-		if err != nil {
-			return nil, errors.Wrap(err, "failed to solve metadata operation")
-		}
-
-		metadataOpRef, err := metadataOpResult.SingleRef()
-
-		if err != nil {
-			return nil, errors.Wrap(err, "failed to get metadata reference")
-		}
-
-		metadataContent, err := metadataOpRef.ReadFile(ctx, client.ReadRequest{
-			Filename: metadataFilename,
-		})
-
-		if err != nil {
-			return nil, errors.Wrap(err, "failed to read metadata content")
-		}
-
-		var metadata NetAppMetadata
-
-		if err = yaml.Unmarshal(metadataContent, &metadata); err != nil {
-			return nil, errors.Wrap(err, "failed to unmarshal metadata")
-		}
-
-		assembly = metadata.Assembly
-
-		if assembly == "" {
-			return nil, errors.New("unable to determine the assembly")
-		}
+	if err != nil {
+		return nil, err
 	}
 
 	buildOp := sourceOp.
@@ -266,14 +207,77 @@ func write(content []byte, destPath string) llb.StateOption {
 	}
 }
 
-func getAssembly(manifest NetAppDockerfile, opts map[string]string) string {
+func getAssembly(ctx context.Context, manifest NetAppDockerfile, opts map[string]string, c client.Client, sourceOp llb.State, project string) (string, error) {
 	assembly := manifest.Assembly
 
 	if assemblyOption, ok := opts[keyNameAssembly]; ok {
 		assembly = assemblyOption
 	}
 
-	return assembly
+	if (assembly == "") {
+		targetsContent := 
+`<Project>
+	<!-- All the relevant info is in root-level PropertyGroups, so there are no dependent targets to make this work -->
+	<Target Name="GetProjectProperties">
+		<WriteLinesToFile
+			File="$(InfoOutputPath)"
+			Lines="assembly: &quot;$(AssemblyName).dll&quot;"
+			Overwrite="True" />
+	</Target>
+</Project>`
+
+		targetsFilename := fmt.Sprintf("%s/GetProjectProperties.targets", NetAppMetaDir)
+		metadataFilename := fmt.Sprintf("%s/meta.out", NetAppDir)
+
+		metadataOp := sourceOp.
+			With(
+				mkDir("/meta"),
+				write([]byte(targetsContent), targetsFilename),
+			).
+			Run(llb.Shlexf("dotnet build /t:GetProjectProperties /p:CustomAfterMicrosoftCommonTargets=\"%s\" /p:CustomAfterMicrosoftCommonCrossTargetingTargets=\"%s\" /p:InfoOutputPath=\"%s\" \"%s\"", targetsFilename, targetsFilename, metadataFilename, project))
+
+		metadataOpMarshaled, err := metadataOp.Marshal(ctx, llb.LinuxAmd64)
+
+		if err != nil {
+			return "", errors.Wrap(err, "failed to marshal metadata operation")
+		}
+
+		metadataOpResult, err := c.Solve(ctx, client.SolveRequest{
+			Definition: metadataOpMarshaled.ToPB(),
+		})
+
+		if err != nil {
+			return "", errors.Wrap(err, "failed to solve metadata operation")
+		}
+
+		metadataOpRef, err := metadataOpResult.SingleRef()
+
+		if err != nil {
+			return "", errors.Wrap(err, "failed to get metadata reference")
+		}
+
+		metadataContent, err := metadataOpRef.ReadFile(ctx, client.ReadRequest{
+			Filename: metadataFilename,
+		})
+
+		if err != nil {
+			return "", errors.Wrap(err, "failed to read metadata content")
+		}
+
+		var metadata NetAppMetadata
+
+		if err = yaml.Unmarshal(metadataContent, &metadata); err != nil {
+			return "", errors.Wrap(err, "failed to unmarshal metadata")
+		}
+
+		assembly = metadata.Assembly
+	}
+
+	if assembly == "" {
+		return "", errors.New("unable to determine the assembly")
+	}
+
+	return assembly, nil
 }
 
 func getConfiguration(manifest NetAppDockerfile, opts map[string]string) string {
