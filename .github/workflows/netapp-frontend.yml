@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - master
+  pull_request:
+    branches:
+      - "**"
 
 jobs:
 
@@ -35,7 +38,7 @@ jobs:
           context: .
           file: ./frontend/netapp/Dockerfile
           platforms: linux/amd64
-          push: true
+          push: ${{ github.event_name == 'push' }}
           tags: philliphoff/netapp-frontend:latest
 
       - name: Image digest
