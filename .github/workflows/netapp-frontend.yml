@@ -3,7 +3,7 @@ name: netapp-frontend-ci
 on:
   push:
     branches:
-      - main
+      - master
 
 jobs:
 
