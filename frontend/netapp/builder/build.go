@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path"
 
 	"github.com/moby/buildkit/client/llb"
@@ -11,6 +12,7 @@ import (
 	"github.com/moby/buildkit/frontend/dockerfile/dockerfile2llb"
 	"github.com/moby/buildkit/frontend/gateway/client"
 	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v2"
 )
 
@@ -66,10 +68,14 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 		return nil, err
 	}
 
-	project, err := getProject(netAppDockerfile, opts)
+	project := getProject(netAppDockerfile, opts)
 
-	if err != nil {
-		return nil, err
+	if project == "" {
+		project, err = inferProject(ctx, c, opts, buildOpts.SessionID)
+
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	configuration := getConfiguration(netAppDockerfile, opts)
@@ -294,6 +300,56 @@ func getConfiguration(manifest NetAppDockerfile, opts map[string]string) string 
 	return configuration
 }
 
+func inferProject(ctx context.Context, c client.Client, opts map[string]string, sessionID string) (string, error) {
+	localNameDockerfile := DefaultLocalNameDockerfile
+	if v, ok := opts[keyNameDockerfile]; ok {
+		localNameDockerfile = v
+	}
+
+	dockerfileSource := llb.Local(localNameDockerfile,
+		llb.SessionID(sessionID),
+	)
+
+	dockerfileSourceDefinition, err := dockerfileSource.Marshal(ctx)
+
+	if err != nil {
+		return "", errors.Wrap(err, "failed to marshal Dockerfile source")
+	}
+
+	dockerfileSourceResult, err := c.Solve(ctx, client.SolveRequest{
+		Definition: dockerfileSourceDefinition.ToPB(),
+	})
+
+	if err != nil {
+		return "", errors.Wrap(err, "failed to resolve Dockerfile source")
+	}
+
+	dockerfileSourceRef, err := dockerfileSourceResult.SingleRef()
+
+	if err != nil {
+		return "", errors.Wrap(err, "failed to obtain reference to Dockerfile source")
+	}
+
+	readDirResult, err := dockerfileSourceRef.ReadDir(ctx, client.ReadDirRequest{
+		Path: ".",
+		IncludePattern: "*.*proj",
+	})
+
+	if err != nil {
+		return "", errors.Wrap(err, "failed to read the Dockerfile directory")
+	}
+
+	for _, file := range readDirResult {
+		if os.FileMode(file.Mode).IsRegular() {
+			return file.Path, nil
+		}
+	}
+
+	logrus.Info("Hello world!")
+
+	return "", errors.New("no project could be inferred")
+}
+
 func getManifest(ctx context.Context, c client.Client, opts map[string]string, sessionID string) (NetAppDockerfile, error) {
 	var manifest NetAppDockerfile
 
@@ -352,18 +408,12 @@ func getManifest(ctx context.Context, c client.Client, opts map[string]string, s
 	return manifest, nil
 }
 
-func getProject(manifest NetAppDockerfile, opts map[string]string) (string, error) {
+func getProject(manifest NetAppDockerfile, opts map[string]string) string {
 	project := manifest.Project
 
 	if projectOption, ok := opts[keyNameProject]; ok {
 		project = projectOption
 	}
 
-	var error error
-
-	if project == "" {
-		error = errors.New("no project property or option was set")
-	}
-
-	return project, error
+	return project
 }
