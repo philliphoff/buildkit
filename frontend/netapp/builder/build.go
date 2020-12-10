@@ -53,35 +53,39 @@ type NetAppMetadata struct {
 func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 	buildOpts := c.BuildOpts()
 	opts := buildOpts.Opts
+	sessionID := buildOpts.SessionID
 
 	localNameContext := DefaultLocalNameContext
 	if v, ok := opts[keyNameContext]; ok {
 		localNameContext = v
 	}
 
-	contextSource := llb.Local(localNameContext,
-		llb.SessionID(c.BuildOpts().SessionID))
+	localNameDockerfile := DefaultLocalNameDockerfile
+	if v, ok := opts[keyNameDockerfile]; ok {
+		localNameDockerfile = v
+	}
 
-	netAppDockerfile, err := getManifest(ctx, c, opts, buildOpts.SessionID)
+	netAppDockerfile, err := getManifest(ctx, c, opts, localNameDockerfile, sessionID)
 
 	if err != nil {
 		return nil, err
 	}
 
-	project := getProject(netAppDockerfile, opts)
+	project, err := getProject(
+		netAppDockerfile,
+		opts,
+		func() (string, error) {
+			return inferProject(ctx, c, localNameDockerfile, sessionID)
+		})
 
-	if project == "" {
-		project, err = inferProject(ctx, c, opts, buildOpts.SessionID)
-
-		if err != nil {
-			return nil, err
-		}
+	if err != nil {
+		return nil, err
 	}
 
 	configuration := getConfiguration(netAppDockerfile, opts)
 
-	buildDir := path.Join(NetAppDir, "build")
-	publishDir := path.Join(NetAppDir, "publish")
+	contextSource := llb.Local(localNameContext,
+		llb.SessionID(c.BuildOpts().SessionID))
 
 	sourceOp := llb.
 		Image(NetAppSdkImage).
@@ -94,14 +98,23 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 			copyAll(contextSource, "."),
 		)
 
-	assembly, err := getAssembly(ctx, netAppDockerfile, opts, c, sourceOp, project)
+	assembly, err := getAssembly(
+		netAppDockerfile,
+		opts,
+		func() (string, error) {
+			return inferAssembly(ctx, c, sourceOp, project)
+		})
 
 	if err != nil {
 		return nil, err
 	}
 
+	buildDir := path.Join(NetAppDir, "build")
+
 	buildOp := sourceOp.
 		Run(llb.Shlexf("dotnet build \"%s\" -c \"%s\" -o \"%s\"", project, configuration, buildDir))
+
+	publishDir := path.Join(NetAppDir, "publish")
 
 	publishOp := buildOp.
 		Run(llb.Shlexf("dotnet publish \"%s\" -c \"%s\" -o \"%s\"", project, configuration, publishDir))
@@ -141,7 +154,6 @@ func Build(ctx context.Context, c client.Client) (*client.Result, error) {
 	var entrypoint []string
 
 	entrypoint = append(entrypoint, "dotnet")
-	// TODO: Pull/evaluate from project file
 	entrypoint = append(entrypoint, assembly)
 
 	image.Architecture = "amd64"
@@ -213,15 +225,8 @@ func write(content []byte, destPath string) llb.StateOption {
 	}
 }
 
-func getAssembly(ctx context.Context, manifest NetAppDockerfile, opts map[string]string, c client.Client, sourceOp llb.State, project string) (string, error) {
-	assembly := manifest.Assembly
-
-	if assemblyOption, ok := opts[keyNameAssembly]; ok {
-		assembly = assemblyOption
-	}
-
-	if (assembly == "") {
-		targetsContent := 
+func inferAssembly(ctx context.Context, c client.Client, sourceOp llb.State, project string) (string, error) {
+	targetsContent := 
 `<Project>
 	<!-- All the relevant info is in root-level PropertyGroups, so there are no dependent targets to make this work -->
 	<Target Name="GetProjectProperties">
@@ -232,55 +237,70 @@ func getAssembly(ctx context.Context, manifest NetAppDockerfile, opts map[string
 	</Target>
 </Project>`
 
-		targetsFilename := fmt.Sprintf("%s/GetProjectProperties.targets", NetAppMetaDir)
-		metadataFilename := fmt.Sprintf("%s/meta.out", NetAppDir)
+	targetsFilename := fmt.Sprintf("%s/GetProjectProperties.targets", NetAppMetaDir)
+	metadataFilename := fmt.Sprintf("%s/meta.out", NetAppDir)
 
-		metadataOp := sourceOp.
-			With(
-				mkDir("/meta"),
-				write([]byte(targetsContent), targetsFilename),
-			).
-			Run(llb.Shlexf("dotnet build /t:GetProjectProperties /p:CustomAfterMicrosoftCommonTargets=\"%s\" /p:CustomAfterMicrosoftCommonCrossTargetingTargets=\"%s\" /p:InfoOutputPath=\"%s\" \"%s\"", targetsFilename, targetsFilename, metadataFilename, project))
+	metadataOp := sourceOp.
+		With(
+			mkDir("/meta"),
+			write([]byte(targetsContent), targetsFilename),
+		).
+		Run(llb.Shlexf("dotnet build /t:GetProjectProperties /p:CustomAfterMicrosoftCommonTargets=\"%s\" /p:CustomAfterMicrosoftCommonCrossTargetingTargets=\"%s\" /p:InfoOutputPath=\"%s\" \"%s\"", targetsFilename, targetsFilename, metadataFilename, project))
 
-		metadataOpMarshaled, err := metadataOp.Marshal(ctx, llb.LinuxAmd64)
+	metadataOpMarshaled, err := metadataOp.Marshal(ctx, llb.LinuxAmd64)
 
-		if err != nil {
-			return "", errors.Wrap(err, "failed to marshal metadata operation")
-		}
-
-		metadataOpResult, err := c.Solve(ctx, client.SolveRequest{
-			Definition: metadataOpMarshaled.ToPB(),
-		})
-
-		if err != nil {
-			return "", errors.Wrap(err, "failed to solve metadata operation")
-		}
-
-		metadataOpRef, err := metadataOpResult.SingleRef()
-
-		if err != nil {
-			return "", errors.Wrap(err, "failed to get metadata reference")
-		}
-
-		metadataContent, err := metadataOpRef.ReadFile(ctx, client.ReadRequest{
-			Filename: metadataFilename,
-		})
-
-		if err != nil {
-			return "", errors.Wrap(err, "failed to read metadata content")
-		}
-
-		var metadata NetAppMetadata
-
-		if err = yaml.Unmarshal(metadataContent, &metadata); err != nil {
-			return "", errors.Wrap(err, "failed to unmarshal metadata")
-		}
-
-		assembly = metadata.Assembly
+	if err != nil {
+		return "", errors.Wrap(err, "failed to marshal metadata operation")
 	}
 
+	metadataOpResult, err := c.Solve(ctx, client.SolveRequest{
+		Definition: metadataOpMarshaled.ToPB(),
+	})
+
+	if err != nil {
+		return "", errors.Wrap(err, "failed to solve metadata operation")
+	}
+
+	metadataOpRef, err := metadataOpResult.SingleRef()
+
+	if err != nil {
+		return "", errors.Wrap(err, "failed to get metadata reference")
+	}
+
+	metadataContent, err := metadataOpRef.ReadFile(ctx, client.ReadRequest{
+		Filename: metadataFilename,
+	})
+
+	if err != nil {
+		return "", errors.Wrap(err, "failed to read metadata content")
+	}
+
+	var metadata NetAppMetadata
+
+	if err = yaml.Unmarshal(metadataContent, &metadata); err != nil {
+		return "", errors.Wrap(err, "failed to unmarshal metadata")
+	}
+
+	assembly := metadata.Assembly
+
 	if assembly == "" {
-		return "", errors.New("unable to determine the assembly")
+		return "", errors.New("unable to infer assembly")
+	}
+
+	return assembly, nil
+}
+
+type infer func() (string, error)
+
+func getAssembly(manifest NetAppDockerfile, opts map[string]string, inferAssembly infer) (string, error) {
+	assembly := manifest.Assembly
+
+	if assemblyOption, ok := opts[keyNameAssembly]; ok {
+		assembly = assemblyOption
+	}
+
+	if (assembly == "") {
+		return inferAssembly()
 	}
 
 	return assembly, nil
@@ -300,12 +320,7 @@ func getConfiguration(manifest NetAppDockerfile, opts map[string]string) string 
 	return configuration
 }
 
-func inferProject(ctx context.Context, c client.Client, opts map[string]string, sessionID string) (string, error) {
-	localNameDockerfile := DefaultLocalNameDockerfile
-	if v, ok := opts[keyNameDockerfile]; ok {
-		localNameDockerfile = v
-	}
-
+func inferProject(ctx context.Context, c client.Client, localNameDockerfile string, sessionID string) (string, error) {
 	dockerfileSource := llb.Local(localNameDockerfile,
 		llb.SessionID(sessionID),
 	)
@@ -350,13 +365,8 @@ func inferProject(ctx context.Context, c client.Client, opts map[string]string, 
 	return "", errors.New("no project could be inferred")
 }
 
-func getManifest(ctx context.Context, c client.Client, opts map[string]string, sessionID string) (NetAppDockerfile, error) {
+func getManifest(ctx context.Context, c client.Client, opts map[string]string, localNameDockerfile string, sessionID string) (NetAppDockerfile, error) {
 	var manifest NetAppDockerfile
-
-	localNameDockerfile := DefaultLocalNameDockerfile
-	if v, ok := opts[keyNameDockerfile]; ok {
-		localNameDockerfile = v
-	}
 
 	filename := opts[keyFilename]
 
@@ -408,12 +418,16 @@ func getManifest(ctx context.Context, c client.Client, opts map[string]string, s
 	return manifest, nil
 }
 
-func getProject(manifest NetAppDockerfile, opts map[string]string) string {
+func getProject(manifest NetAppDockerfile, opts map[string]string, inferProject infer) (string, error) {
 	project := manifest.Project
 
-	if projectOption, ok := opts[keyNameProject]; ok {
+	if projectOption, ok := opts[keyNameProject]; ok && projectOption != "" {
 		project = projectOption
 	}
 
-	return project
+	if project == "" {
+		return inferProject()
+	}
+	
+	return project, nil
 }
